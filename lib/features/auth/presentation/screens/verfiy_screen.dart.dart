@@ -1,0 +1,308 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+import '../../../../routes/app_routes.dart';
+import '../../logic/auth_controller.dart';
+import 'auth_shared.dart';
+
+class VerifyScreen extends StatefulWidget {
+  final String email;
+
+  const VerifyScreen({super.key, required this.email});
+
+  @override
+  State<VerifyScreen> createState() => _VerifyScreenState();
+}
+
+class _VerifyScreenState extends State<VerifyScreen> {
+  final _auth = AuthController();
+  final _codeCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
+  final _confirmCtrl = TextEditingController();
+  String? _error;
+  bool _loading = false;
+  bool _verified = false;
+  bool _resetDone = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirm = true;
+
+  Timer? _timer;
+  int _cooldown = 0;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _auth.dispose();
+    _codeCtrl.dispose();
+    _passwordCtrl.dispose();
+    _confirmCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _verify() async {
+    FocusScope.of(context).unfocus();
+    final code = _codeCtrl.text.trim();
+    if (!RegExp(r'^\d{6}$').hasMatch(code)) {
+      setState(() => _error = 'Enter the 6-digit verification code');
+      return;
+    }
+
+    setState(() {
+      _error = null;
+      _loading = true;
+    });
+    final success = await _auth.verifyResetCode(email: widget.email, code: code);
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (success) {
+      setState(() => _verified = true);
+    } else {
+      _showError(_auth.errorMessage);
+    }
+  }
+
+  Future<void> _resetPassword() async {
+    FocusScope.of(context).unfocus();
+    if (_passwordCtrl.text.length < 8) {
+      setState(() => _error = 'Use at least 8 characters');
+      return;
+    }
+    if (_passwordCtrl.text != _confirmCtrl.text) {
+      setState(() => _error = "Passwords don't match");
+      return;
+    }
+
+    setState(() {
+      _error = null;
+      _loading = true;
+    });
+    final success = await _auth.resetPassword(
+      email: widget.email,
+      code: _codeCtrl.text.trim(),
+      newPassword: _passwordCtrl.text,
+    );
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (success) {
+      setState(() => _resetDone = true);
+    } else {
+      _showError(_auth.errorMessage);
+    }
+  }
+
+  Future<void> _resendCode() async {
+    if (_loading || _cooldown > 0) return;
+    setState(() => _loading = true);
+    final success = await _auth.sendResetCode(email: widget.email);
+    if (!mounted) return;
+    setState(() => _loading = false);
+    if (success) {
+      _startCooldown();
+    } else {
+      _showError(_auth.errorMessage);
+    }
+  }
+
+  void _startCooldown() {
+    _timer?.cancel();
+    setState(() => _cooldown = 30);
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_cooldown <= 1) {
+        timer.cancel();
+        if (mounted) setState(() => _cooldown = 0);
+      } else if (mounted) {
+        setState(() => _cooldown--);
+      }
+    });
+  }
+
+  void _showError(String? message) {
+    if (message == null || message.isEmpty) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AuthScaffold(
+      heroFraction: 0.40,
+      signIcon: Icons.verified_user_rounded,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 350),
+        switchInCurve: Curves.easeOut,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.06),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+        ),
+        child: _resetDone
+            ? _buildSuccess()
+            : _verified
+                ? _buildResetForm()
+                : _buildVerifyForm(),
+      ),
+    );
+  }
+
+  Widget _buildVerifyForm() {
+    return Column(
+      key: const ValueKey('verify'),
+      children: [
+        const AuthTitle(
+          line1: 'Verify Your',
+          line2: 'Email Address',
+          subtitle: 'Enter the 6-digit code sent to your email address.',
+        ),
+        const SizedBox(height: 8),
+        Text(
+          widget.email,
+          style: GoogleFonts.poppins(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: AppColors.navy,
+          ),
+        ),
+        const SizedBox(height: 24),
+        AuthInput(
+          controller: _codeCtrl,
+          hint: 'Enter verification code',
+          icon: Icons.pin_outlined,
+          keyboardType: TextInputType.number,
+          textInputAction: TextInputAction.done,
+          errorText: _error,
+          onChanged: (_) {
+            if (_error != null) setState(() => _error = null);
+          },
+        ),
+        const SizedBox(height: 20),
+        AuthButton(
+          label: 'Verify Code',
+          loading: _loading,
+          onTap: _loading ? null : _verify,
+        ),
+        const SizedBox(height: 18),
+        AuthFooterLink(
+          text: "Didn't receive a code?",
+          link: _cooldown > 0 ? 'Resend in $_cooldown s' : 'Resend code',
+          onTap: _resendCode,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildResetForm() {
+    return Column(
+      key: const ValueKey('reset'),
+      children: [
+        const AuthTitle(
+          line1: 'Choose a',
+          line2: 'New Password',
+          subtitle: 'Create a new password for your account.',
+        ),
+        const SizedBox(height: 24),
+        AuthInput(
+          controller: _passwordCtrl,
+          hint: 'New password',
+          icon: Icons.lock_outline_rounded,
+          obscure: _obscurePassword,
+          textInputAction: TextInputAction.next,
+          errorText: _error,
+          onChanged: (_) {
+            if (_error != null) setState(() => _error = null);
+          },
+          suffix: _eye(
+            _obscurePassword,
+            () => setState(() => _obscurePassword = !_obscurePassword),
+          ),
+        ),
+        const SizedBox(height: 12),
+        AuthInput(
+          controller: _confirmCtrl,
+          hint: 'Confirm new password',
+          icon: Icons.verified_user_outlined,
+          obscure: _obscureConfirm,
+          textInputAction: TextInputAction.done,
+          onChanged: (_) {
+            if (_error != null) setState(() => _error = null);
+          },
+          suffix: _eye(
+            _obscureConfirm,
+            () => setState(() => _obscureConfirm = !_obscureConfirm),
+          ),
+        ),
+        const SizedBox(height: 20),
+        AuthButton(
+          label: 'Reset Password',
+          loading: _loading,
+          onTap: _loading ? null : _resetPassword,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSuccess() {
+    return Column(
+      key: const ValueKey('success'),
+      children: [
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0.6, end: 1),
+          duration: const Duration(milliseconds: 600),
+          curve: Curves.elasticOut,
+          builder: (_, value, child) =>
+              Transform.scale(scale: value, child: child),
+          child: Container(
+            width: 84,
+            height: 84,
+            decoration: BoxDecoration(
+              color: AppColors.navy.withValues(alpha: 0.08),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.verified_outlined,
+              size: 40,
+              color: AppColors.navy,
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        const AuthTitle(line1: 'Password', line2: 'Reset'),
+        const SizedBox(height: 10),
+        Text(
+          'Your password has been updated successfully.',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.poppins(
+            fontSize: 12.5,
+            color: AppColors.hint,
+            height: 1.6,
+          ),
+        ),
+        const SizedBox(height: 26),
+        AuthButton(
+          label: 'Back to Login',
+          onTap: () => Navigator.of(context).pushNamedAndRemoveUntil(
+            AppRoutes.auth,
+            (route) => false,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _eye(bool obscured, VoidCallback onTap) => IconButton(
+        splashRadius: 20,
+        icon: Icon(
+          obscured ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+          size: 20,
+          color: AppColors.hint,
+        ),
+        onPressed: onTap,
+      );
+}

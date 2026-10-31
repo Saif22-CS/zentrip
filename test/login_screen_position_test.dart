@@ -1,0 +1,30 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:zentrip/features/auth/presentation/screens/login_screen.dart';
+
+void main() {
+  for (final size in const [Size(360, 640), Size(393, 852)]) {
+    testWidgets('login header and sheet align on ${size.height}px screen',
+        (tester) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 12);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewPadding);
+
+      await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final sheetRect = tester.getRect(find.byType(SingleChildScrollView));
+      final signRect =
+          tester.getRect(find.byIcon(Icons.directions_bus_rounded));
+      expect(sheetRect.top, lessThan(size.height * 0.30));
+      expect(signRect.top, greaterThanOrEqualTo(32));
+      expect(signRect.bottom, lessThan(sheetRect.top));
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+}

@@ -1,0 +1,45 @@
+# Flutter and Dart generated files
+.dart_tool/
+.packages
+.pub/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+build/
+backend/target/
+android/.gradle/
+android/build/
+android/local.properties
+
+# Flutter platform generated files
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+ios/Flutter/ephemeral/
+
+# IDE and OS files
+.vscode/*
+!.vscode/launch.json
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Laravel environment and generated files
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/vendor/
+backend/storage/logs/
+backend/storage/framework/cache/
+backend/storage/framework/sessions/
+backend/storage/framework/testing/
+backend/storage/framework/views/
+backend/bootstrap/cache/
+backend/.phpunit.result.cache
+
+# Local databases and runtime files
+*.sqlite
+*.sqlite-journal
+# Widget Preview related
+.widget_preview/

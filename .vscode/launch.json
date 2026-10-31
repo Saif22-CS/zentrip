@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Zentrip - Chrome (local API)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "chrome",
+      "program": "lib/main.dart",
+      "toolArgs": [
+        "--dart-define=ZENTRIP_API_URL=http://127.0.0.1:8080/api"
+      ]
+    },
+    {
+      "name": "Zentrip - Windows (local API)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "windows",
+      "program": "lib/main.dart",
+      "toolArgs": [
+        "--dart-define=ZENTRIP_API_URL=http://127.0.0.1:8080/api"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,875 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../../../../core/constants/app_colors.dart';
+import '../../../../features/price_alerts/logic/price_alerts_store.dart';
+import '../../../../l10n/app_localizations.dart';
+import '../../../../models/flight_model.dart';
+import '../../../../routes/app_routes.dart';
+import '../../logic/flight_controller.dart';
+import 'flight_search_screen.dart';
+import 'flight_primary_button.dart';
+import 'seat_selection16line_screen.dart';
+import 'seat_selection_screen.dart';
+
+class SearchFlightScreen extends StatefulWidget {
+  final FlightSearchParams? initialSearch;
+  final FlightController? controller;
+
+  const SearchFlightScreen({
+    super.key,
+    this.initialSearch,
+    this.controller,
+  });
+
+  @override
+  State<SearchFlightScreen> createState() => _SearchFlightScreenState();
+}
+
+class _SearchFlightScreenState extends State<SearchFlightScreen> {
+  FlightController? _controller;
+  FlightSearchParams? _params;
+  String? _error;
+  bool _initialized = false;
+  bool _ownsController = false;
+  bool _priceAlertsChecked = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+
+    final routeArgs = ModalRoute.of(context)?.settings.arguments;
+    final suppliedController =
+        widget.controller ?? (routeArgs is FlightController ? routeArgs : null);
+    final suppliedParams = widget.initialSearch ??
+        (routeArgs is FlightSearchParams ? routeArgs : null);
+
+    if (suppliedController != null) {
+      _controller = suppliedController;
+      _params = suppliedController.searchParams;
+      if (suppliedController.results.isNotEmpty) {
+        _checkPriceAlerts();
+      } else if (_params != null && !suppliedController.isLoading) {
+        unawaited(_search(_params!));
+      }
+    } else if (suppliedParams != null) {
+      _params = suppliedParams;
+      _controller = FlightController();
+      _ownsController = true;
+      unawaited(_search(suppliedParams));
+    }
+  }
+
+  Future<void> _search(FlightSearchParams params) async {
+    try {
+      await _controller!.search(params);
+      if (!mounted) return;
+      _checkPriceAlerts();
+    } catch (error, stackTrace) {
+      debugPrint('Flight search failed: $error\n$stackTrace');
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
+  void _retry() {
+    final params = _params;
+    if (params == null || _controller == null) return;
+    setState(() => _error = null);
+    unawaited(_search(params));
+  }
+
+  void _checkPriceAlerts() {
+    if (_priceAlertsChecked || _controller == null || !mounted) return;
+    _priceAlertsChecked = true;
+    PriceAlertsStore.instance.checkResults(
+      _controller!.results,
+      promoTitle: AppLocalizations.of(context).notifPriceDropTitle,
+    );
+  }
+
+  void _editSearch() {
+    final params = _params;
+    if (params == null) {
+      Navigator.pushNamed(context, AppRoutes.flightSearch);
+      return;
+    }
+    Navigator.pushNamed(
+      context,
+      AppRoutes.flightSearch,
+      arguments: FlightSearchRouteArgs(
+        originCode: params.originCode,
+        originCity: params.originCity,
+        destinationCode: params.destinationCode,
+        destinationCity: params.destinationCity,
+        roundTrip: params.isRoundTrip,
+        departureDate: params.departureDate,
+        returnDate: params.returnDate,
+        passengers: params.passengers,
+        seatClass: params.seatClass,
+      ),
+    );
+  }
+
+  void _selectFlight(FlightModel flight) {
+    final controller = _controller;
+    final params = _params ?? controller?.searchParams;
+    if (controller == null || params == null) return;
+
+    controller.selectFlight(flight);
+    final seatScreen = flight.usesTwoByTwoSeatLayout
+        ? SeatSelection16LineScreen(
+            flight: flight,
+            passengerCount: params.passengers,
+            seatClass: params.seatClass,
+            returnDate: params.returnDate,
+            rowCount: flight.seatRows,
+          )
+        : SeatSelectionScreen(
+            flight: flight,
+            passengerCount: params.passengers,
+            seatClass: params.seatClass,
+            returnDate: params.returnDate,
+            rowCount: flight.seatRows,
+          );
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => seatScreen));
+  }
+
+  @override
+  void dispose() {
+    if (_ownsController) _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final controller = _controller;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(l10n.flightResults),
+        actions: [
+          IconButton(
+            tooltip: l10n.searchFlights,
+            onPressed: _editSearch,
+            icon: const Icon(Icons.tune_rounded),
+          ),
+        ],
+      ),
+      body: controller == null || _params == null
+          ? _MissingSearch(onSearch: _editSearch)
+          : ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) {
+                if (controller.isLoading) {
+                  return const Center(
+                    child: CircularProgressIndicator(
+                      color: AppColors.primary,
+                    ),
+                  );
+                }
+                if (_error != null) {
+                  return _SearchError(
+                    message: l10n.flightSearchError,
+                    retryLabel: l10n.retry,
+                    onRetry: _retry,
+                    onEdit: _editSearch,
+                    editLabel: l10n.searchFlightsBtn,
+                  );
+                }
+                if (controller.results.isEmpty) {
+                  return _NoFlights(
+                    params: _params!,
+                    onEdit: _editSearch,
+                    l10n: l10n,
+                  );
+                }
+                return _FlightResults(
+                  controller: controller,
+                  params: _params!,
+                  onEdit: _editSearch,
+                  onSelect: _selectFlight,
+                  l10n: l10n,
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _FlightResults extends StatelessWidget {
+  final FlightController controller;
+  final FlightSearchParams params;
+  final VoidCallback onEdit;
+  final ValueChanged<FlightModel> onSelect;
+  final AppLocalizations l10n;
+
+  const _FlightResults({
+    required this.controller,
+    required this.params,
+    required this.onEdit,
+    required this.onSelect,
+    required this.l10n,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Column(
+      children: [
+        _SearchSummary(params: params, onEdit: onEdit, l10n: l10n),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${controller.results.length} ${l10n.flightResults.toLowerCase()}',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+              _SortChip(
+                label: l10n.cheapest,
+                selected: controller.sort == FlightSort.cheapest,
+                onTap: () => controller.setSort(FlightSort.cheapest),
+              ),
+              const SizedBox(width: 8),
+              _SortChip(
+                label: l10n.fastest,
+                selected: controller.sort == FlightSort.fastest,
+                onTap: () => controller.setSort(FlightSort.fastest),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+            itemCount: controller.results.length,
+            itemBuilder: (context, index) => _FlightCard(
+              flight: controller.results[index],
+              params: params,
+              isDark: isDark,
+              onSelect: () => onSelect(controller.results[index]),
+              l10n: l10n,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SearchSummary extends StatelessWidget {
+  final FlightSearchParams params;
+  final VoidCallback onEdit;
+  final AppLocalizations l10n;
+
+  const _SearchSummary({
+    required this.params,
+    required this.onEdit,
+    required this.l10n,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final dateText = MaterialLocalizations.of(context)
+        .formatMediumDate(params.departureDate);
+    final returnText = params.returnDate == null
+        ? null
+        : MaterialLocalizations.of(context)
+            .formatMediumDate(params.returnDate!);
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: AppColors.primaryGradient,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.18),
+            blurRadius: 16,
+            offset: const Offset(0, 7),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        params.originCode,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 10),
+                      child: Icon(Icons.flight_rounded,
+                          size: 18, color: Colors.white70),
+                    ),
+                    Flexible(
+                      child: Text(
+                        params.destinationCode,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    _SummaryLabel(
+                      icon: Icons.calendar_today_rounded,
+                      text: returnText == null
+                          ? dateText
+                          : '$dateText – $returnText',
+                    ),
+                    _SummaryLabel(
+                      icon: Icons.people_alt_rounded,
+                      text: '${params.passengers} · ${l10n.homeTravelersLabel}',
+                    ),
+                    _SummaryLabel(
+                      icon: Icons.airline_seat_recline_extra,
+                      text: _seatClassLabel(params.seatClass, l10n),
+                    ),
+                    _SummaryLabel(
+                      icon: Icons.sync_alt_rounded,
+                      text: params.isRoundTrip ? l10n.roundTrip : l10n.oneWay,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton.filledTonal(
+            tooltip: l10n.searchFlights,
+            onPressed: onEdit,
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.white.withValues(alpha: 0.16),
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.edit_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SummaryLabel extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _SummaryLabel({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: Colors.white70),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+}
+
+class _FlightCard extends StatelessWidget {
+  final FlightModel flight;
+  final FlightSearchParams params;
+  final bool isDark;
+  final VoidCallback onSelect;
+  final AppLocalizations l10n;
+
+  const _FlightCard({
+    required this.flight,
+    required this.params,
+    required this.isDark,
+    required this.onSelect,
+    required this.l10n,
+  });
+
+  double get _fare => switch (params.seatClass.toLowerCase()) {
+        'business' => flight.businessPrice ?? flight.economyPrice,
+        'first' => flight.firstPrice ?? flight.economyPrice,
+        _ => flight.economyPrice,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final baseFare = _fare * params.passengers;
+    final taxes = baseFare * 0.12;
+    const serviceFee = 12.0;
+    final total = baseFare + taxes + serviceFee;
+    final available = flight.seatsAvailable >= params.passengers;
+    final surface = isDark ? AppColors.darkSurface : AppColors.surface;
+    final border = isDark ? AppColors.darkBorder : AppColors.border;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: border),
+        boxShadow: isDark
+            ? const []
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              _AirlineLogo(flight: flight),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      flight.airline,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      flight.flightNumber,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                l10n.seatsLeft(flight.seatsAvailable),
+                style: TextStyle(
+                  color:
+                      available ? AppColors.textSecondary : AppColors.accentRed,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              _AirportTime(
+                time: flight.departureTime,
+                code: flight.originCode,
+                city: flight.originCity,
+                alignEnd: false,
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Column(
+                    children: [
+                      Text(
+                        flight.duration,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              height: 1.5,
+                              color: AppColors.border,
+                            ),
+                          ),
+                          const Icon(Icons.flight_rounded,
+                              color: AppColors.primary, size: 17),
+                          Expanded(
+                            child: Container(
+                              height: 1.5,
+                              color: AppColors.border,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        flight.isDirect
+                            ? l10n.flightDirect
+                            : l10n.flightStops(flight.stops),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              _AirportTime(
+                time: flight.arrivalTime,
+                code: flight.destinationCode,
+                city: flight.destinationCity,
+                alignEnd: true,
+              ),
+            ],
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Divider(height: 1),
+          ),
+          _PriceLine(
+            label:
+                '${l10n.flightTicketPrice} · ${params.passengers} × \$${_fare.toStringAsFixed(2)}',
+            amount: baseFare,
+          ),
+          const SizedBox(height: 5),
+          _PriceLine(label: l10n.flightTaxesFees, amount: taxes),
+          const SizedBox(height: 5),
+          _PriceLine(label: l10n.flightServiceFee, amount: serviceFee),
+          const SizedBox(height: 9),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${l10n.flightTotal} · ${_seatClassLabel(params.seatClass, l10n)}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              Text(
+                '\$${total.toStringAsFixed(2)}',
+                style: const TextStyle(
+                  color: AppColors.primary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          FlightPrimaryButton(
+            label: l10n.flightSelectThis,
+            onPressed: available ? onSelect : null,
+            icon: Icons.event_seat_rounded,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AirportTime extends StatelessWidget {
+  final DateTime time;
+  final String code;
+  final String city;
+  final bool alignEnd;
+
+  const _AirportTime({
+    required this.time,
+    required this.code,
+    required this.city,
+    required this.alignEnd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final alignment =
+        alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+    return SizedBox(
+      width: 82,
+      child: Column(
+        crossAxisAlignment: alignment,
+        children: [
+          Text(
+            '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+            style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800),
+          ),
+          Text(
+            code,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          Text(
+            city,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 10,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AirlineLogo extends StatelessWidget {
+  final FlightModel flight;
+
+  const _AirlineLogo({required this.flight});
+
+  @override
+  Widget build(BuildContext context) {
+    final logo = flight.airlineLogoUrl;
+    return CircleAvatar(
+      radius: 21,
+      backgroundColor: AppColors.primarySurface,
+      foregroundImage: logo == null || logo.isEmpty ? null : NetworkImage(logo),
+      onForegroundImageError: logo == null || logo.isEmpty
+          ? null
+          : (error, stackTrace) =>
+              debugPrint('Airline logo failed to load: $error'),
+      child: flight.airlineCode.isEmpty
+          ? const Icon(Icons.flight_rounded, color: AppColors.primary, size: 19)
+          : Text(
+              flight.airlineCode,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.primary,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+    );
+  }
+}
+
+class _PriceLine extends StatelessWidget {
+  final String label;
+  final double amount;
+
+  const _PriceLine({required this.label, required this.amount});
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+          ),
+          Text(
+            '\$${amount.toStringAsFixed(2)}',
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+}
+
+class _SortChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SortChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected ? AppColors.primary : AppColors.border,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : AppColors.textSecondary,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      );
+}
+
+class _NoFlights extends StatelessWidget {
+  final FlightSearchParams params;
+  final VoidCallback onEdit;
+  final AppLocalizations l10n;
+
+  const _NoFlights({
+    required this.params,
+    required this.onEdit,
+    required this.l10n,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final date = MaterialLocalizations.of(context)
+        .formatMediumDate(params.departureDate);
+    return _MessageState(
+      icon: Icons.flight_outlined,
+      title: l10n.flightNoResultsForSearch(
+        params.originCode,
+        params.destinationCode,
+        date,
+      ),
+      buttonLabel: l10n.searchFlightsBtn,
+      onPressed: onEdit,
+    );
+  }
+}
+
+class _SearchError extends StatelessWidget {
+  final String message;
+  final String retryLabel;
+  final String editLabel;
+  final VoidCallback onRetry;
+  final VoidCallback onEdit;
+
+  const _SearchError({
+    required this.message,
+    required this.retryLabel,
+    required this.editLabel,
+    required this.onRetry,
+    required this.onEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) => _MessageState(
+        icon: Icons.cloud_off_rounded,
+        title: message,
+        buttonLabel: retryLabel,
+        onPressed: onRetry,
+        secondaryLabel: editLabel,
+        onSecondaryPressed: onEdit,
+      );
+}
+
+class _MissingSearch extends StatelessWidget {
+  final VoidCallback onSearch;
+
+  const _MissingSearch({required this.onSearch});
+
+  @override
+  Widget build(BuildContext context) => _MessageState(
+        icon: Icons.search_rounded,
+        title: AppLocalizations.of(context).searchFlights,
+        buttonLabel: AppLocalizations.of(context).searchFlightsBtn,
+        onPressed: onSearch,
+      );
+}
+
+class _MessageState extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String buttonLabel;
+  final VoidCallback onPressed;
+  final String? secondaryLabel;
+  final VoidCallback? onSecondaryPressed;
+
+  const _MessageState({
+    required this.icon,
+    required this.title,
+    required this.buttonLabel,
+    required this.onPressed,
+    this.secondaryLabel,
+    this.onSecondaryPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 54, color: AppColors.primaryLight),
+              const SizedBox(height: 16),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton(
+                onPressed: onPressed,
+                child: Text(buttonLabel),
+              ),
+              if (secondaryLabel != null && onSecondaryPressed != null) ...[
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: onSecondaryPressed,
+                  child: Text(secondaryLabel!),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+}
+
+String _seatClassLabel(String seatClass, AppLocalizations l10n) =>
+    switch (seatClass.toLowerCase()) {
+      'business' => l10n.business,
+      'first' => l10n.firstClass,
+      _ => l10n.economy,
+    };
